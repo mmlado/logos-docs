@@ -21,6 +21,7 @@
 - [Join the Blend Network as a core node](./blend/join-the-blend-network-as-a-core-node.md)
 ## Zone SDK
 
+- [Inscribe data on-chain using the Zone SDK](./zone-sdk/inscribe-data-on-chain-using-zone-sdk.md)
 - [Bridge assets between Logos Blockchain and a Zone](./zone-sdk/bridge-assets-between-blockchain-and-zone.md)
 
 <!-- Keep this README at the end of the SUMMARY -->
