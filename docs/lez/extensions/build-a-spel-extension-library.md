@@ -48,13 +48,11 @@ edition = "2021"
 
 [package.metadata.spel]
 extension_attr = "my_extension"
-instruction_attrs = ["require_my_gate"]
 ```
 
 - `extension_attr` is the attribute name consumers put on their `#[lez_program]` module to opt in. By convention, match it to your crate name (with `_` not `-`).
-- `instruction_attrs` lists any per-instruction marker attributes your library defines (e.g. `require_admin` from `admin-authority`). The framework strips these from emitted handler fns so they don't double-expand. Omit if your library has no per-instruction gates.
 
-The metadata sits under `[package.metadata.*]`, an established Cargo convention for tool-specific data that Cargo itself ignores.
+Per-instruction gate attributes your library defines (e.g. `#[require_admin]` from `admin-authority`) need no metadata: they are ordinary proc-macros that re-expand on the emitted handler and consume themselves, so the framework leaves them alone.
 
 ## Define the runtime library
 
