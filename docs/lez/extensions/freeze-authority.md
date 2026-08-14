@@ -261,12 +261,14 @@ pub struct ProgramConfig {
 }
 
 #[lez_program]
-#[admin_authority(admin_config = config, offset = 32)]
-#[freeze_authority(freeze_config = config, offset = 64)]
+#[admin_authority]
+#[freeze_authority]
 mod my_program {
     use admin_authority::admin_initialize;
+    use freeze_authority::freeze_initialize;
 
     #[admin_initialize]
+    #[freeze_initialize]
     #[instruction]
     pub fn initialize(
         #[account(init, pda = literal("program_config"))] mut config: AccountWithMetadata,
@@ -281,11 +283,12 @@ mod my_program {
 
 What changes:
 
-- **No `freeze_initialize`.** Your account-creating instruction writes the struct, and the freeze slot is born vacant: it rejects every holder-path caller until the admin appoints the first holder via `freeze_authority_transfer`, the same path that repopulates a renounced slot. There is no initialization ordering to get right because there is no initializer. The admin slot next door is bootstrapped by marking that same instruction with `#[admin_initialize]`, the caller becomes admin in the transaction that creates the account.
-- **Slot markers keep the layout honest.** `#[admin_slot]` and `#[freeze_slot]` each derive an offset const and a layout test, and the build fails if a marker position and its `offset = ...` declaration ever disagree, for example after a field is added above a slot.
+- **No `freeze_initialize` instruction, an anchor attribute instead.** Mark your account-creating instruction with `#[freeze_initialize]`. The attribute expands to nothing, it declares embedded mode so the module marker stays bare, and the freeze slot is born vacant: it rejects every holder-path caller until the admin appoints the first holder via `freeze_authority_transfer`, the same path that repopulates a renounced slot. There is no initialization ordering to get right because nothing initializes. The admin slot next door is bootstrapped by marking that same instruction with `#[admin_initialize]`, the caller becomes admin in the transaction that creates the account. Two anchors on one instruction compose.
+- **Slot markers declare the offsets.** `#[admin_slot]` and `#[freeze_slot]` each derive an offset const and a layout test, and the framework reads each slot through its const. A field added above a slot moves the derived offset with it. There is no offset kwarg, the marked field is the only source.
+- **The declarations must agree.** A struct carrying `#[freeze_slot]` with no instruction carrying `#[freeze_initialize]` refuses to build, the marked field declares embedded mode with nothing anchoring it. An anchored instruction with no marked field refuses too. Neither declaration is plain dedicated mode.
 - **One account per transaction.** When admin and freeze share the embedding account, management instructions that read both carry the shared account once. `freeze_authority_renounce` drops from 3 accounts to 2.
 - **Splice-only writes.** Freeze operations write only the 33 byte window (32 byte slot plus the frozen flag), your neighboring fields survive every toggle and transfer.
-- **Offsets never appear in a transaction.** They compile into the program as literals, and the IDL carries no offset arguments.
+- **Offsets never appear in a transaction.** They compile into the program, and the IDL carries no offset arguments.
 
 The library repository ships `freeze-authority-sample-embedded` with the full layout, adjacent-window tests, and a committed dry-run walkthrough.
 

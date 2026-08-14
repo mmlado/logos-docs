@@ -221,11 +221,13 @@ The hook is opt-in, omit `wrap_instructions` from your metadata and the framewor
 
 ## Embedded mode (optional)
 
-An extension whose per-program state is one fixed-size slot can let consumers embed that slot inside one of their own accounts instead of a dedicated PDA. The consumer declares it on your marker, role name plus byte offset:
+An extension whose per-program state is one fixed-size slot can let consumers embed that slot inside one of their own accounts instead of a dedicated PDA. A consumer declares it on your marker with the role name, and the byte offset is derived from the slot field marker described below:
 
 ```rust
-#[my_extension(my_state = config, offset = 32)]
+#[my_extension(my_state = config)]
 ```
+
+An extension that declares an anchor (see born-initialized slots below) drops even the kwarg, embedded mode is inferred from the consumer's anchored instruction and the marker stays bare in both modes.
 
 To support this as an author: ship windowed state accessors that splice only your slot's byte window (`decode_at`, `write_to_at`, `bootstrap_at` and friends), give the affected instruction functions a trailing `offset: usize` parameter, and declare it as a bound arg so the framework fills it at the dispatch call site as a compile-time literal. Bound args must be the trailing parameters of the function, in the same order as their metadata blocks. Any other position is a hard error at discovery naming the function, because the framework always appends the literals last:
 
@@ -242,9 +244,22 @@ default = 0
 
 `embedded.skip` names instructions not emitted in embedded mode (typically your initializer, the consumer's own account creation replaces it). `state_type` is mandatory for embedded mode and names the Rust type that lives in your window. The framework reads the window's size through it and emits a compile-time assert per pair of extensions embedding into the same consumer account, so genuinely overlapping windows refuse to compile instead of silently corrupting each other. Discovery fails closed when an embedded extension omits it. Bound args are stripped from the IDL and the transaction entirely, a caller can never supply an offset, and dedicated mode is the degenerate case offset 0 through the declared default. `from` also accepts a peer marker's kwarg (`from = "admin_authority::offset"`) so an extension can read state a peer embedded, without depending on the peer's crate. A missing marker or kwarg without a declared default is a hard compile error, never a silent zero.
 
-**Slot field markers.** The framework derives a marker name from your role, the role name minus a `_config` suffix plus `_slot` (role `admin_config` gives `#[admin_slot]`, role `my_state` gives `#[my_state_slot]`). A consumer who puts that marker on the embedding field of an `#[account_type]` struct gets a derived `<MARKER>_OFFSET` const, an emitted layout test, and a compile-time assert that the derived offset equals the `offset = ...` declared on your marker, so a field added above the slot fails the build instead of silently moving the window. Adoption is optional (no marker, no check), and two structs carrying the same marker is a compile error. Nothing to implement on your side, the mechanism ships with `#[account_type]`, but document the marker name your role produces.
+**Slot field markers.** The framework derives a marker name from your role, the role name minus a `_config` suffix plus `_slot` (role `admin_config` gives `#[admin_slot]`, role `my_state` gives `#[my_state_slot]`). The consumer puts that marker on the embedding field of an `#[account_type]` struct, and the field's position becomes the offset: a derived `<MARKER>_OFFSET` const the framework reads the slot through, plus an emitted layout test. A field added above the slot moves the derived offset with it. A consumer may still write a literal `offset = ...` on your marker, then a compile-time assert checks it against the marked field's position and a disagreement fails the build. A derivation with no marked field is a compile error spelling out the fix, and two structs carrying the same marker is a compile error naming both. Nothing to implement on your side, the mechanism ships with `#[account_type]`, but document the marker name your role produces.
 
-**Born-initialized slots.** If your slot must never exist uninitialized (the way an admin slot without a holder is a takeover window), ship a bootstrap attribute consumers put on their own account-creating instruction (the way `admin-authority` ships `#[admin_initialize]`). Implement it as a proc macro that injects your `bootstrap_at` call into the handler body, and declare it as an inject wrapper in metadata so your role parameters synthesize on the marked instruction like they do on gates. Make it embedded-mode only and let the framework stamp the location kwargs, and reject instructions whose embedding account is not `init`, a bootstrap against an existing account is a takeover. A slot that can start empty (the way freeze starts vacant and the admin appoints the first holder via transfer) needs no bootstrap attribute at all.
+**Born-initialized slots.** If your slot must never exist uninitialized (the way an admin slot without a holder is a takeover window), ship a bootstrap attribute consumers put on their own account-creating instruction (the way `admin-authority` ships `#[admin_initialize]`), and declare it as the anchor in your embedded metadata:
+
+```toml
+[package.metadata.spel.embedded]
+state_type = "my_extension::MyConfig"
+anchor_attr = "my_extension_init"
+anchor_role = "my_state"
+```
+
+A declared anchor changes how consumers adopt embedded mode. A consumer fn carrying the anchor attribute puts your extension in embedded mode, its `#[account(init)]` param is the embedding account, and the marker stays bare. Writing the role kwarg on the marker becomes a hard error, the anchor fn is the single declaration. When the anchored fn creates several accounts, the consumer names the embedding one with the same kwarg on the anchor (`#[my_extension_init(my_state = config)]`). The anchor is also the coverage gate. A struct carrying your slot marker with no anchored fn refuses to build, because the account would ship born renounced. An anchored fn with no marked field refuses too, the derivation has no carrier. Neither declaration is plain dedicated mode.
+
+Implement the attribute as a proc macro that injects your `bootstrap_at` call into the handler body, and declare it as an inject wrapper in metadata so your role parameters synthesize on the marked instruction like they do on gates. Reject instructions whose embedding account is not `init`, a bootstrap against an existing account is a takeover.
+
+A slot that can start empty (the way freeze starts vacant and the admin appoints the first holder via transfer) has nothing to bootstrap, but anchoring still pays: declare the anchor pair and ship the attribute as a pure pass-through that expands to nothing. The consumer's surface goes bare like any anchored extension, and the slot-marker agreement turns hard, a marked field with no anchored instruction refuses to build instead of silently compiling dedicated mode. freeze-authority does exactly this with `#[freeze_initialize]`. An extension that declares no anchor keeps the role kwarg on the marker as its consumers' embedded declaration.
 
 When two extensions embed into the same consumer account at distinct offsets, the framework merges the duplicated account into one transaction account (listed once in the IDL with unioned constraints, cloned into each position of the call) and your instruction must emit exactly one post-state per unique account id. Same account at the same offset is a compile error.
 
@@ -315,6 +330,16 @@ mod my_program { ... }
 Each extension is discovered independently by its own `extension_attr`. Each contributes its own instructions to the dispatcher, and each gate attribute re-expands on its own gated handlers without touching the others.
 
 Marker order is the cross-extension ABI: the first marker's instructions and injected parameters come first in the dispatcher, the IDL, and the account order. When two extensions inject the same parameter name with identical constraints they share one account, conflicting constraints are a compile error naming both extensions. Duplicate instruction names between extensions (or an extension and a consumer function) are a compile error naming both sources. Two extensions can even embed into the same consumer account at distinct offsets, see embedded mode above.
+
+## Account layouts in the consumer's IDL
+
+`#[account_type]` marks a struct or enum as an account layout, the decode catalogue entry wallets and the CLI use to read a program's accounts. The IDL splits layouts from helpers: annotated types land in `accounts`, and every type a layout references lands in `types`, collected by name without needing an annotation of its own.
+
+A layout reaches a consumer's IDL only from code connected to the program: the consumer's own crate, its local path dependencies, and the extensions its markers activate. Your extension's layouts ship because your instructions ship. Everything else in the dependency graph is inert, a transitive crate can never put a layout into a consumer's IDL, and its types are pulled in only by reference when something connected names them. Items a default build never compiles are screened out everywhere, so a `#[cfg(test)]` fixture is neither a layout nor an answer for a referenced type.
+
+Two connected crates declaring account layouts of the same name refuse to build, naming the type and both paths. Two layouts of one name would make the IDL ambiguous, and both declarations sit in code the consumer owns or activated, so the rename is theirs to make.
+
+In embedded mode your `state_type` is not an account of its own. The consumer's struct is the layout, and your type is described in `types` by reference.
 
 ## Verifying your extension
 
