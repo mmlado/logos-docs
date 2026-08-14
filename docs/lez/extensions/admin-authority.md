@@ -170,7 +170,7 @@ The PDA must already exist on chain as a claimed account, an unclaimed candidate
 
 ## Embedded mode, the admin slot inside your own account
 
-Instead of a dedicated Config PDA, the admin slot can live inside one of your program's own accounts. Embedded mode is two declarations, each on the thing it describes: `#[admin_slot]` on the field that holds the slot, and `#[admin_initialize]` on the instruction that creates the account. The module marker stays bare, and the offset is derived from the marked field:
+Instead of a dedicated Config PDA, the admin slot can live inside one of your program's own accounts. Embedded mode is two declarations, each on the thing it describes: `#[admin_slot]` on the field that holds the slot, and `#[initialize]` on the instruction that creates the account. `#[initialize]` is a shorthand for the anchor attribute of every activated extension, here it stands for `#[admin_initialize]`, and the framework expands it before anything else runs. The module marker stays bare, and the offset is derived from the marked field:
 
 ```rust
 #[account_type]
@@ -187,7 +187,7 @@ pub struct ProgramConfig {
 mod my_program {
     use admin_authority::admin_initialize;
 
-    #[admin_initialize]
+    #[initialize]
     #[instruction]
     pub fn initialize(
         #[account(init, pda = literal("program_config"))] mut config: AccountWithMetadata,
@@ -216,9 +216,9 @@ impl ProgramConfig {
 
 What changes:
 
-- **No `admin_initialize` instruction.** Mark your own account-creating instruction with `#[admin_initialize]` instead. The bootstrap is injected, the caller is installed as admin in the same transaction that creates the account, and the slot is born initialized, so the initialization window from the warning above does not exist in embedded mode. An account created without the bootstrap is born renounced, permanently.
+- **No `admin_initialize` instruction.** Mark your own account-creating instruction with `#[initialize]` instead. The bootstrap is injected, the caller is installed as admin in the same transaction that creates the account, and the slot is born initialized, so the initialization window from the warning above does not exist in embedded mode. An account created without the bootstrap is born renounced, permanently.
 - **`#[admin_slot]` declares the offset.** The field marker derives an `ADMIN_SLOT_OFFSET` const and a layout test, and the framework reads the slot through the const. A field added above the slot moves the derived offset with it instead of silently moving the window.
-- **The declarations must agree.** A struct carrying `#[admin_slot]` with no fn carrying `#[admin_initialize]` refuses to build, the account would ship born renounced. An `#[admin_initialize]` fn with no marked field refuses too. Neither declaration is plain dedicated mode. When the anchored instruction creates several accounts, name the embedding one with `#[admin_initialize(admin_config = config)]`.
+- **The declarations must agree.** A struct carrying `#[admin_slot]` with no fn carrying `#[admin_initialize]` refuses to build, the account would ship born renounced. An `#[admin_initialize]` fn with no marked field refuses too. Neither declaration is plain dedicated mode. The shorthand covers only the unambiguous shape, one `#[account(init)]` param on the fn. When the instruction creates several accounts, write the explicit attr and name the embedding one, `#[admin_initialize(admin_config = config)]`.
 - **Everything retargets.** Gates read the slot at the declared offset from your account, `admin_transfer` and `admin_renounce` splice only the 32 byte window and leave your neighboring fields untouched, and the IDL shows your account wherever the dedicated PDA used to appear.
 - **The offset is never in a transaction.** It compiles into the program. The IDL carries no offset argument, and writing `admin_config = ...` or `offset = ...` on the marker or on a gate by hand is a compile error.
 - **One account fewer** on every gated transaction, the slot travels with state you were already passing.
